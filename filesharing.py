@@ -11,8 +11,9 @@ from PIL import Image, ImageTk  # Ensure this import is at the top of your file
 from tkinter import ttk  # Add this import for the progress bar
 import requests
 from flask import Flask, request, jsonify  # Add Flask imports
-
+#1
 app = Flask(__name__)  # Initialize Flask app
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024 * 1024  # Set max upload size to 1 GB
 
 print("Current working directory:", os.getcwd())
 print("Does person_icon.png exist?", os.path.exists("person_icon.png"))
@@ -43,6 +44,16 @@ friend_requests = {}  # Example: {'user1': ['user3']}
 #         "profile_icon": "path_to_icon.png",
 #         "bio": "User bio",
 #         "friends": ["friend1", "friend2"]
+#     }
+# }
+
+# Example structure for file_storage:
+# file_storage = {
+#     "file1.txt": {
+#         "username": "user1",
+#         "upload_time": 1683072000,
+#         "size": 1024,
+#         "downloads": 0
 #     }
 # }
 
@@ -78,6 +89,7 @@ def load_data():
                 user_data = pickle.load(f)
                 if not isinstance(user_data, dict):  # Ensure it's a dictionary
                     raise ValueError("Corrupted user_data file")
+            print("Loaded user_data:", user_data)  # Debugging line
         except Exception as e:
             print(f"Error loading user_data: {e}")
             user_data = {}  # Reset to an empty dictionary if corrupted
@@ -138,8 +150,16 @@ def reload_data():
 
 # Function to create a new user account
 def create_user(username, password):
-    response = requests.post(f"{SERVER_URL}/register", json={"username": username, "password": password})
-    return response.json().get('message', "Error")
+    try:
+        response = requests.post(f"{SERVER_URL}/register", json={"username": username, "password": password})
+        if response.status_code == 200:
+            return response.json().get('message', "Error")
+        else:
+            return f"Error: {response.status_code} - {response.text}"
+    except requests.exceptions.JSONDecodeError:
+        return "Error: Server returned an invalid response."
+    except Exception as e:
+        return f"Error: {e}"
 
 # Function to authenticate user
 def authenticate_user(username, password):
@@ -161,13 +181,32 @@ def upload_file(username, file_path):
     return response.json().get('message', "Error")
 
 def upload_file_client(username, file_path):
-    with open(file_path, 'rb') as f:
-        response = requests.post(
-            f"{SERVER_URL}/upload",  # Use SERVER_URL here
-            files={'file': f},
-            data={'username': username}
-        )
-    return response.json().get('message', "Error")
+    try:
+        with open(file_path, 'rb') as f:
+            response = requests.post(
+                f"{SERVER_URL}/upload",
+                files={'file': f},
+                data={'username': username}
+            )
+        if response.status_code == 413:
+            return "Error: File size exceeds the server's limit."
+        return response.json().get('message', "Error")
+    except requests.exceptions.JSONDecodeError:
+        return "Error: Server returned an invalid response."
+    except Exception as e:
+        return f"Error: {e}"
+
+def download_file(file_name):
+    response = requests.get(f"{SERVER_URL}/download/{file_name}", stream=True)
+    if response.status_code == 200:
+        save_path = filedialog.asksaveasfilename(initialfile=file_name)
+        if save_path:
+            with open(save_path, 'wb') as f:
+                for chunk in response.iter_content(1024):
+                    f.write(chunk)
+            messagebox.showinfo("Success", f"File {file_name} downloaded successfully!")
+    else:
+        messagebox.showerror("Error", "Failed to download file.")
 
 # Function to check and delete old files
 def cleanup_files():
@@ -189,6 +228,47 @@ def cleanup_files():
 def list_files(username):
     files = [file for file, metadata in file_storage.items() if metadata['username'] == username]
     return files
+
+def fetch_file_metadata():
+    try:
+        response = requests.get(f"{SERVER_URL}/file_metadata")
+        if response.status_code == 200:
+            return response.json().get("files", {})
+        else:
+            print(f"Error fetching file metadata: {response.status_code}")
+            return {}
+    except Exception as e:
+        print(f"Error fetching file metadata: {e}")
+        return {}
+
+def populate_recent_uploads():
+    global file_storage
+    try:
+        # Fetch the latest file metadata from the server
+        response = requests.get(f"{SERVER_URL}/recent_uploads")
+        if response.status_code == 200:
+            file_metadata = response.json().get("files", [])
+            file_list = [
+                {"name": file['name'], "downloads": file.get('downloads', 0), "size": file.get('size', 0), "upload_time": file.get('upload_time', 0)}
+                for file in file_metadata
+            ]
+
+            # Clear the Listbox and populate it with valid files
+            recent_uploads_listbox.delete(0, tk.END)
+            for file in file_list:
+                recent_uploads_listbox.insert(
+                    tk.END,
+                    f"{file['name']} | Downloads: {file['downloads']} | Size: {file['size']} bytes | Uploaded: {time.ctime(file['upload_time'])}"
+                )
+
+            # Attach the "Sort By" menu to the Recent Uploads section
+            create_sort_by_menu(file_list, recent_uploads_listbox, sort_button_recent_uploads)
+        else:
+            print(f"Failed to fetch recent uploads: {response.status_code}")
+    except Exception as e:
+        print(f"Error fetching recent uploads: {e}")
+
+populate_recent_uploads()
 
 #Networking for Peer-to-Peer (P2P) File Transfer
 #Networking for Peer-to-Peer (P2P) File Transfer
@@ -232,9 +312,14 @@ def listen_for_files():
 #Chat System
 #Chat System
 
-#TK
-#TK
-#TK
+# Function to retrieve recent chat messages
+def get_chat_messages():
+    try:
+        response = requests.get(f"{SERVER_URL}/get_messages")
+        return response.json()  # Expecting a JSON response from the server
+    except Exception as e:
+        print(f"Error fetching messages: {e}")
+        return []
 
 # Function to send a chat message
 def send_chat_message(username, message):
@@ -248,26 +333,14 @@ def send_chat_message(username, message):
         print(f"Error sending message: {e}")
         return "Error sending message"
 
-# Function to retrieve recent chat messages
-def get_chat_messages():
-    try:
-        response = requests.get(f"{SERVER_URL}/get_messages")
-        return response.json()  # Expecting a JSON response from the server
-    except Exception as e:
-        print(f"Error fetching messages: {e}")
-        return []
+#TK
+#TK
+#TK
 
 # Function to send a friend request
 def send_friend_request(from_user, to_user):
-    if to_user not in user_data:
-        return "User does not exist."
-    if to_user not in friend_requests:
-        friend_requests[to_user] = []
-    if from_user not in friend_requests[to_user]:
-        friend_requests[to_user].append(from_user)
-        save_data()
-        return "Friend request sent."
-    return "Friend request already sent."
+    response = requests.post(f"{SERVER_URL}/send_friend_request", json={"from_user": from_user, "to_user": to_user})
+    return response.json().get("message", "Error")
 
 # Function to accept a friend request
 def accept_friend_request(user, friend):
@@ -292,6 +365,101 @@ def decline_friend_request(user, friend):
         save_data()
         return "Friend request declined."
     return "No friend request to decline."
+
+def add_friend(username, friend):
+    response = requests.post(f"{SERVER_URL}/add_friend", json={"username": username, "friend": friend})
+    return response.json().get("message", "Error")
+
+def remove_friend(username, friend):
+    response = requests.post(f"{SERVER_URL}/remove_friend", json={"username": username, "friend": friend})
+    return response.json().get("message", "Error")
+
+def get_profile_picture(username):
+    try:
+        # Request the profile picture from the server
+        response = requests.get(f"{SERVER_URL}/profile_picture/{username}", stream=True)
+        if response.status_code == 200:
+            # Save the profile picture locally
+            profile_icons_path = "profile_icons"
+            os.makedirs(profile_icons_path, exist_ok=True)  # Ensure the directory exists
+            profile_picture_path = os.path.join(profile_icons_path, f"{username}_profile.png")
+            print(f"Downloading profile picture for {username} to {profile_picture_path}")  # Debugging line
+            with open(profile_picture_path, 'wb') as f:
+                for chunk in response.iter_content(1024):
+                    f.write(chunk)
+            return profile_picture_path
+        else:
+            print(f"Failed to fetch profile picture for {username}: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"Error fetching profile picture for {username}: {e}")
+        return None
+
+def get_user_data(username):
+    response = requests.get(f"{SERVER_URL}/user_data/{username}")
+    if response.status_code == 200:
+        return response.json()
+    return None
+
+def update_bio(username, bio):
+    response = requests.post(f"{SERVER_URL}/update_bio", json={"username": username, "bio": bio})
+    return response.json().get("message", "Error")
+
+def set_profile_picture(username, file_name):
+    print(f"Setting profile picture for user: {username} with file: {file_name}")  # Debugging line
+
+    try:
+        # Send a request to the server to set the file as the profile picture
+        response = requests.post(
+            f"{SERVER_URL}/set_profile_picture",
+            json={"username": username, "file_name": file_name}
+        )
+        if response.status_code == 200 and response.json().get("success"):
+            messagebox.showinfo("Success", "Profile picture updated successfully!")
+            update_profile_button(username)  # Refresh the profile picture instantly
+        else:
+            messagebox.showerror("Error", response.json().get("message", "Failed to set profile picture."))
+    except Exception as e:
+        print(f"Error in set_profile_picture: {e}")  # Debugging line
+        messagebox.showerror("Error", f"An error occurred: {e}")
+
+def update_profile_button(username):
+    global profile_button  # Ensure profile_button is accessible globally
+    try:
+        print("Updating profile button for user:", username)
+        # Download the profile picture from the server
+        profile_picture_path = get_profile_picture(username)
+        if not profile_picture_path or not os.path.exists(profile_picture_path):
+            print(f"Profile picture not found for {username}. Using default icon.")
+            profile_picture_path = "person_icon.png"
+
+        # Open and resize the image to fit the button (50x50 pixels)
+        image = Image.open(profile_picture_path)
+        image = image.resize((50, 50), Image.Resampling.LANCZOS)
+        profile_icon = ImageTk.PhotoImage(image)
+
+        # Configure the button to use the image and set its dimensions
+        profile_button.config(image=profile_icon, text="", width=50, height=50)
+        profile_button.image = profile_icon  # Keep a reference to prevent garbage collection
+    except Exception as e:
+        print(f"Error updating profile button: {e}")
+        profile_button.config(text="Profile", image="", width=10, height=2)
+
+def update_profile_icon(username, profile_icon_label):
+    icon_path = f"profile_icons/{username}_profile.png"
+    if not os.path.exists(icon_path):  # Use default if the profile picture is missing
+        print(f"Profile picture not found for {username}. Using default icon.")
+        icon_path = "person_icon.png"
+
+    try:
+        image = Image.open(icon_path)
+        image = image.resize((150, 150), Image.Resampling.LANCZOS)
+        profile_icon = ImageTk.PhotoImage(image)
+        profile_icon_label.config(image=profile_icon, text="")
+        profile_icon_label.image = profile_icon
+    except Exception as e:
+        print(f"Error loading profile icon: {e}")
+        profile_icon_label.config(text="[Profile Icon]", image="", bg="gray")
 
 # Create GUI
 def create_gui():
@@ -344,35 +512,25 @@ def create_gui():
 # Function to display the main application screen
 def show_main_screen(username):
     global root
-    root.geometry("600x800")  # Set to a vertical half-rectangle size
+    global profile_button  # Make profile_button accessible globally
+    global recent_uploads_listbox  # Make recent_uploads_listbox accessible globally
+    global sort_button_recent_uploads  # Make sort_button_recent_uploads accessible globally
 
     # Clear existing widgets
     for widget in root.winfo_children():
         widget.destroy()
 
+    # Create the profile button
+    profile_button = tk.Button(root, text="Profile", command=lambda: show_profile_settings(username), width=10, height=2)
+    profile_button.place(x=10, y=10)
+    update_profile_button(username)
+    root.update()  # Force the GUI to refresh
+
+    root.geometry("600x800")  # Set to a vertical half-rectangle size
+
     # Welcome label
     label_welcome = tk.Label(root, text=f"Welcome, {username}!", font=("Arial", 16))
     label_welcome.pack(pady=10)
-
-    # Profile button (top-left corner)
-    def create_profile_button():
-        try:
-            # Open and resize the image to 50x50 pixels
-            icon_path = user_data[username].get("profile_icon", "person_icon.png")
-            image = Image.open(icon_path)
-            image = image.resize((50, 50), Image.Resampling.LANCZOS)
-            profile_icon = ImageTk.PhotoImage(image)
-
-            profile_button = tk.Button(root, image=profile_icon, command=lambda: show_profile_settings(username), width=50, height=50)
-            profile_button.image = profile_icon  # Keep a reference to avoid garbage collection
-        except Exception as e:
-            print(f"Error loading profile icon: {e}")
-            # Fallback to a text-based button if the image is not found or fails to load
-            profile_button = tk.Button(root, text="Profile", command=lambda: show_profile_settings(username), width=10, height=2)
-
-        profile_button.place(x=10, y=10)
-
-    root.after(100, create_profile_button)  # Delay the creation of the profile button
 
     # Notification bell
     notification_bell = tk.Button(root, text="🔔", font=("Arial", 16), command=lambda: show_notifications(username))
@@ -412,10 +570,15 @@ def show_main_screen(username):
 
     # Populate the user list
     def populate_user_list():
-        if 'user_listbox' in globals() and user_listbox.winfo_exists():  # Check if the widget exists
+        try:
+            response = requests.get(f"{SERVER_URL}/all_users")
+            print("Server response for all users:", response.json())  # Debugging line
+            users = response.json().get("users", [])
             user_listbox.delete(0, tk.END)
-            for user in user_data.keys():
+            for user in users:
                 user_listbox.insert(tk.END, user)
+        except Exception as e:
+            print(f"Error fetching user list: {e}")
 
     populate_user_list()
 
@@ -440,27 +603,44 @@ def show_main_screen(username):
 
     recent_uploads_listbox.config(yscrollcommand=scrollbar_uploads.set)
 
-    # Populate recent uploads
-    def populate_recent_uploads():
-        try:
-            response = requests.get(f"{SERVER_URL}/recent_uploads")
-            recent_files = response.json()  # Expecting a JSON response from the server
-            recent_uploads_listbox.delete(0, tk.END)
-            for file in recent_files:
-                recent_uploads_listbox.insert(tk.END, f"{file['name']} | {file['username']} | {file['upload_time']} | {file['size']} bytes")
-        except Exception as e:
-            print(f"Error fetching recent uploads: {e}")
+    # Create the "Sort By" button
+    sort_button_recent_uploads = tk.Button(root, text="Sort By")
+    sort_button_recent_uploads.pack(pady=5)
 
+    # Populate recent uploads
     populate_recent_uploads()
+
+    def on_file_double_click(event):
+        selected_file = recent_uploads_listbox.get(recent_uploads_listbox.curselection()).split(" | ")[0]
+        download_file(selected_file)
+
+    recent_uploads_listbox.bind("<Double-1>", on_file_double_click)
+
+    def on_right_click(event):
+        try:
+            selected_file = recent_uploads_listbox.get(recent_uploads_listbox.curselection())
+            parts = selected_file.split(" | ")
+            if len(parts) < 2:
+                raise ValueError("Invalid file entry format")
+            file_name = parts[0]
+
+            menu = tk.Menu(root, tearoff=0)
+            menu.add_command(label="Download", command=lambda: download_file(file_name))
+            menu.add_command(label="View User Profile", command=lambda: show_profile(file_owner, username))
+            menu.add_command(label="Set as Profile Picture", command=lambda: set_profile_picture(username, file_name))
+            menu.add_command(label="Report", command=lambda: messagebox.showinfo("Report", "Feature coming soon!"))
+            menu.post(event.x_root, event.y_root)
+        except Exception as e:
+            print(f"Error handling right-click: {e}")
+
+    recent_uploads_listbox.bind("<Button-3>", on_right_click)
 
     # Auto-refresh function
     def auto_refresh():
         if 'root' in globals() and root.winfo_exists():  # Check if the root window exists
             reload_data()  # Reload shared data from disk
-            if 'user_listbox' in globals() and user_listbox.winfo_exists():  # Check if the widget exists
-                populate_user_list()
             if 'recent_uploads_listbox' in globals() and recent_uploads_listbox.winfo_exists():  # Check if the recent uploads listbox exists
-                populate_recent_uploads()
+                populate_recent_uploads()  # Refresh recent uploads
             root.after(10000, auto_refresh)  # Schedule the function to run every 10 seconds
 
     auto_refresh()  # Start the auto-refresh loop
@@ -486,22 +666,49 @@ def show_notifications(username):
     requests_listbox = tk.Listbox(notifications_window, height=15, width=40)
     requests_listbox.pack(pady=10)
 
-    for request in friend_requests.get(username, []):
+    # Fetch friend requests from the server
+    try:
+        response = requests.get(f"{SERVER_URL}/friend_requests", params={"username": username})
+        if response.status_code == 200:
+            friend_requests = response.json().get("requests", [])
+        else:
+            messagebox.showerror("Error", f"Failed to fetch friend requests: {response.status_code}")
+            friend_requests = []
+    except requests.exceptions.RequestException as e:
+        messagebox.showerror("Error", f"Failed to connect to the server: {e}")
+        friend_requests = []
+
+    for request in friend_requests:
         requests_listbox.insert(tk.END, request)
 
     def accept_request():
-        selected = requests_listbox.get(requests_listbox.curselection())
-        if selected:
-            result = accept_friend_request(username, selected)
-            requests_listbox.delete(requests_listbox.curselection())
-            messagebox.showinfo("Friend Request", result)
+        try:
+            selected = requests_listbox.get(requests_listbox.curselection())
+            if selected:
+                response = requests.post(f"{SERVER_URL}/accept_friend_request", json={"user": username, "friend": selected})
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("success"):
+                        requests_listbox.delete(requests_listbox.curselection())
+                        messagebox.showinfo("Success", f"Accepted friend request from {selected}.")
+                    else:
+                        messagebox.showerror("Error", result.get("message", "Failed to accept friend request."))
+                else:
+                    messagebox.showerror("Error", f"Server returned status code {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("Error", f"Failed to connect to the server: {e}")
+        except Exception as e:
+            messagebox.showerror("Error", f"An unexpected error occurred: {e}")
 
     def decline_request():
         selected = requests_listbox.get(requests_listbox.curselection())
         if selected:
-            result = decline_friend_request(username, selected)
-            requests_listbox.delete(requests_listbox.curselection())
-            messagebox.showinfo("Friend Request", result)
+            response = requests.post(f"{SERVER_URL}/decline_friend_request", json={"user": username, "friend": selected})
+            if response.json().get("success"):
+                requests_listbox.delete(requests_listbox.curselection())
+                messagebox.showinfo("Success", f"Declined friend request from {selected}.")
+            else:
+                messagebox.showerror("Error", "Failed to decline friend request.")
 
     accept_button = tk.Button(notifications_window, text="Accept", command=accept_request)
     accept_button.pack(pady=5)
@@ -510,18 +717,17 @@ def show_notifications(username):
     decline_button.pack(pady=5)
 
 def upload_file_ui(username):
-    # Create a new window for file upload
     upload_window = tk.Toplevel(root)
     upload_window.title("File Upload")
     upload_window.geometry("400x300")
 
-    label = tk.Label(upload_window, text="Select a file to upload:")
+    label = tk.Label(upload_window, text="Select a file to upload (Max: 1 GB):")
     label.pack(pady=10)
 
     def upload_file_action():
-        file_path = filedialog.askopenfilename()  # Use filedialog here
+        file_path = filedialog.askopenfilename()
         if file_path:
-            result = upload_file_client(username, file_path)  # Call the renamed function
+            result = upload_file_client(username, file_path)
             messagebox.showinfo("Upload Result", result)
 
     button_select_file = tk.Button(upload_window, text="Select File", command=upload_file_action)
@@ -540,10 +746,13 @@ def chat_ui(username):
         chat_log_display.delete(1.0, tk.END)
         messages = get_chat_messages()
         for log in messages:
-            chat_log_display.insert(
-                tk.END,
-                f"[{log['timestamp']}] {log['username']}: {log['message']}\n"
-            )
+            if isinstance(log, dict) and all(key in log for key in ("timestamp", "username", "message")):
+                chat_log_display.insert(
+                    tk.END,
+                    f"[{log['timestamp']}] {log['username']}: {log['message']}\n"
+                )
+            else:
+                print(f"Invalid log entry: {log}")  # Debugging line
         chat_log_display.config(state="disabled")
 
     refresh_button = tk.Button(chat_window, text="Refresh", command=refresh_chat)
@@ -579,144 +788,188 @@ def logout():
     create_gui()
 
 def show_profile(username, current_user):
+    user_info = get_user_data(username)  # Fetch user data from the server
+    if not user_info:
+        messagebox.showerror("Error", f"User '{username}' does not exist.")
+        return
+
     profile_window = tk.Toplevel(root)
     profile_window.title(f"{username}'s Profile")
     profile_window.geometry("400x600")
 
-    # Create a canvas and a scrollbar
-    canvas = tk.Canvas(profile_window)
-    scrollbar = tk.Scrollbar(profile_window, orient="vertical", command=canvas.yview)
-    scrollable_frame = tk.Frame(canvas)
-
-    # Configure the canvas
-    scrollable_frame.bind(
-        "<Configure>",
-        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-    )
-    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
-
-    # Pack the canvas and scrollbar
-    canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
+    # Create a scrollable frame
+    scrollable_frame = make_scrollable_window(profile_window)
 
     # Profile icon
-    icon_path = user_data[username].get("profile_icon", "person_icon.png")
-    if not icon_path or not os.path.exists(icon_path):  # Use default if None or invalid
-        icon_path = "person_icon.png"
-
-    try:
-        image = Image.open(icon_path)
-        image = image.resize((150, 150), Image.Resampling.LANCZOS)
-        profile_icon = ImageTk.PhotoImage(image)
-        profile_icon_label = tk.Label(scrollable_frame, image=profile_icon)
-        profile_icon_label.image = profile_icon
-    except Exception as e:
-        print(f"Error loading profile icon: {e}")
-        profile_icon_label = tk.Label(scrollable_frame, text="[Profile Icon]", font=("Arial", 20), width=20, height=10, bg="gray")
-    profile_icon_label.pack(pady=10)
+    profile_picture_path = get_profile_picture(username)
+    if profile_picture_path and os.path.exists(profile_picture_path):
+        try:
+            profile_image = Image.open(profile_picture_path)
+            profile_image = profile_image.resize((150, 150), Image.Resampling.LANCZOS)
+            profile_photo = ImageTk.PhotoImage(profile_image)
+            profile_label = tk.Label(scrollable_frame, image=profile_photo)
+            profile_label.image = profile_photo
+            profile_label.pack(pady=10, anchor="center")
+        except Exception as e:
+            print(f"Error loading profile picture: {e}")
+            profile_label = tk.Label(scrollable_frame, text="[Profile Icon]", font=("Arial", 20), bg="gray")
+            profile_label.pack(pady=10, anchor="center")
+    else:
+        profile_label = tk.Label(scrollable_frame, text="[Profile Icon]", font=("Arial", 20), bg="gray")
+        profile_label.pack(pady=10, anchor="center")
 
     # Profile name
     profile_name = tk.Label(scrollable_frame, text=username, font=("Arial", 16))
-    profile_name.pack(pady=10)
+    profile_name.pack(pady=10, anchor="center")
 
     # Bio
     bio_label = tk.Label(scrollable_frame, text="Bio:", font=("Arial", 14))
-    bio_label.pack(pady=10)
+    bio_label.pack(pady=10, anchor="w")
 
-    bio_text = tk.Label(scrollable_frame, text=user_data[username].get("bio", "No bio available."), wraplength=300, justify="left")
-    bio_text.pack(pady=10)
+    bio_text = tk.Label(scrollable_frame, text=user_info.get("bio", "No bio available."), wraplength=300, justify="left")
+    bio_text.pack(pady=10, anchor="w")
 
-    # Recent uploads
-    recent_uploads_label = tk.Label(scrollable_frame, text="Recent Uploads:", font=("Arial", 14))
-    recent_uploads_label.pack(pady=10)
-
-    recent_uploads_listbox = tk.Listbox(scrollable_frame, height=10, width=50)
-    recent_uploads_listbox.pack(pady=10)
-
-    for file_name, metadata in file_storage.items():
-        if metadata['username'] == username:
-            upload_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(metadata['upload_time']))
-            recent_uploads_listbox.insert(tk.END, f"{file_name} | {upload_time} | {metadata['size']} bytes")
-
-    # Friend list
-    friends_label = tk.Label(scrollable_frame, text="Friends:", font=("Arial", 14))
-    friends_label.pack(pady=10)
-
-    friends_listbox = tk.Listbox(scrollable_frame, height=10, width=50)
-    friends_listbox.pack(pady=10)
-
-    for friend in friends.get(username, []):  # Use `friends` dictionary to display friends
-        friends_listbox.insert(tk.END, friend)
-
-    # Add Friend button (only if viewing someone else's profile)
-    if username != current_user:
-        def add_friend():
+    # Add Friend button
+    if username != current_user and username not in friends.get(current_user, []):
+        def send_request():
             result = send_friend_request(current_user, username)
             messagebox.showinfo("Friend Request", result)
 
-        add_friend_button = tk.Button(scrollable_frame, text="Add Friend", command=add_friend)
+        add_friend_button = tk.Button(scrollable_frame, text="Add Friend", command=send_request)
         add_friend_button.pack(pady=10)
 
+    # Recent uploads
+    recent_uploads_label = tk.Label(scrollable_frame, text="Recent Uploads:", font=("Arial", 14))
+    recent_uploads_label.pack(pady=10, anchor="w")
+
+    recent_uploads_listbox = tk.Listbox(scrollable_frame, height=10, width=50)
+    recent_uploads_listbox.pack(pady=10, anchor="w")
+
+    # Define the sort button before using it
+    sort_button_user_uploads = tk.Button(scrollable_frame, text="Sort By")
+    sort_button_user_uploads.pack(pady=5)
+
+    # Populate recent uploads in the user profile
+    try:
+        response = requests.get(f"{SERVER_URL}/user_uploads", params={"username": username})
+        if response.status_code == 200:
+            uploads = response.json().get("uploads", [])
+            file_list = [
+                {"name": upload['name'], "downloads": upload.get('downloads', 0), "size": upload.get('size', 0), "upload_time": upload.get('upload_time', 0)}
+                for upload in uploads
+            ]
+            recent_uploads_listbox.delete(0, tk.END)
+            for file in file_list:
+                recent_uploads_listbox.insert(
+                    tk.END,
+                    f"{file['name']} | Downloads: {file['downloads']} | Size: {file['size']} bytes | Uploaded: {time.ctime(file['upload_time'])}"
+                )
+
+            # Attach the "Sort By" menu to the Recent User Uploads section
+            create_sort_by_menu(file_list, recent_uploads_listbox, sort_button_user_uploads)
+        else:
+            print(f"Failed to fetch uploads for {username}: {response.status_code}")
+    except Exception as e:
+        print(f"Error fetching uploads for {username}: {e}")
+
+    # Add double-click functionality to download files
+    def on_file_double_click(event):
+        try:
+            selected_file = recent_uploads_listbox.get(recent_uploads_listbox.curselection()).split(" | ")[0]
+            download_file(selected_file)
+        except Exception as e:
+            print(f"Error handling double-click: {e}")
+
+    recent_uploads_listbox.bind("<Double-1>", on_file_double_click)
+
+    # Add right-click menu for additional options
+    def on_right_click(event):
+        try:
+            selected_file = recent_uploads_listbox.get(recent_uploads_listbox.curselection())
+            parts = selected_file.split(" | ")
+            if len(parts) < 2:
+                raise ValueError("Invalid file entry format")
+            file_name = parts[0]
+
+            menu = tk.Menu(profile_window, tearoff=0)
+            menu.add_command(label="Download", command=lambda: download_file(file_name))
+            menu.add_command(label="Set as Profile Picture", command=lambda: set_profile_picture(current_user, file_name))
+            menu.add_command(label="Report", command=lambda: messagebox.showinfo("Report", "Feature coming soon!"))
+            menu.post(event.x_root, event.y_root)
+        except Exception as e:
+            print(f"Error handling right-click: {e}")
+
+    recent_uploads_listbox.bind("<Button-3>", on_right_click)
+
+    # Friends
+    friends_label = tk.Label(scrollable_frame, text="Friends:", font=("Arial", 14))
+    friends_label.pack(pady=10, anchor="w")
+
+    friends_listbox = tk.Listbox(scrollable_frame, height=10, width=50)
+    friends_listbox.pack(pady=10, anchor="w")
+
+    # Populate friends list
+    try:
+        response = requests.get(f"{SERVER_URL}/friends", params={"username": username})
+        if response.status_code == 200:
+            friends_list = response.json().get("friends", [])
+            for friend in friends_list:
+                friends_listbox.insert(tk.END, friend)
+        else:
+            print(f"Failed to fetch friends for {username}: {response.status_code}")
+    except Exception as e:
+        print(f"Error fetching friends for {username}: {e}")
+
 def show_profile_settings(username):
+    # Fetch user data from the server
+    user_info = get_user_data(username)
+    if not user_info:
+        messagebox.showerror("Error", "User not found.")
+        return
+
+    # Create the settings window
     settings_window = tk.Toplevel(root)
-    settings_window.title("Profile Settings")
+    settings_window.title("User Settings")
     settings_window.geometry("400x600")
 
-    # Profile icon
-    def upload_profile_icon():
+    # Create a scrollable frame
+    scrollable_frame = make_scrollable_window(settings_window)
+
+    # Profile Picture Section
+    profile_icon_label = tk.Label(scrollable_frame, text="[Profile Icon]", font=("Arial", 20), bg="gray")
+    profile_icon_label.pack(pady=10)
+
+    def update_profile_picture():
         file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])
         if file_path:
             try:
-                # Open the image and crop it to 1:1 aspect ratio
-                image = Image.open(file_path)
-                width, height = image.size
-                min_dim = min(width, height)
-                image = image.crop(((width - min_dim) // 2, (height - min_dim) // 2, (width + min_dim) // 2))
-                # Resize to 512x512
-                image = image.resize((512, 512), Image.Resampling.LANCZOS)
-                # Save the image to a file
-                icon_path = f"profile_icons/{username}_icon.png"
-                os.makedirs("profile_icons", exist_ok=True)
-                image.save(icon_path)
-                # Update user data
-                user_data[username]["profile_icon"] = icon_path
-                save_data()
-                # Update the displayed profile icon
-                update_profile_icon()
-                messagebox.showinfo("Success", "Profile picture updated successfully!")
+                # Upload the new profile picture to the server
+                with open(file_path, 'rb') as f:
+                    response = requests.post(
+                        f"{SERVER_URL}/upload_profile_picture",
+                        files={"file": f},
+                        data={"username": username}
+                    )
+                if response.json().get("success"):
+                    update_profile_icon(username, profile_icon_label)
+                    messagebox.showinfo("Success", "Profile picture updated successfully!")
+                else:
+                    messagebox.showerror("Error", "Failed to update profile picture.")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to upload profile picture: {e}")
 
-    def update_profile_icon():
-        # Use a default icon if the profile icon is not set
-        icon_path = user_data[username].get("profile_icon", "person_icon.png")
-        if not icon_path or not os.path.exists(icon_path):  # Use default if None or invalid
-            icon_path = "person_icon.png"
+    # Load the current profile picture
+    update_profile_icon(username, profile_icon_label)
 
-        try:
-            image = Image.open(icon_path)
-            image = image.resize((150, 150), Image.Resampling.LANCZOS)
-            profile_icon = ImageTk.PhotoImage(image)
-            profile_icon_label.config(image=profile_icon, text="")
-            profile_icon_label.image = profile_icon
-        except Exception as e:
-            print(f"Error loading profile icon: {e}")
-            profile_icon_label.config(text="[Profile Icon]", image="", bg="gray")
-
-    profile_icon_label = tk.Label(settings_window, text="[Profile Icon]", font=("Arial", 20), width=20, height=10, bg="gray")
-    profile_icon_label.pack(pady=10)
-    update_profile_icon()
-
-    change_icon_button = tk.Button(settings_window, text="Change Profile Picture", command=upload_profile_icon)
+    change_icon_button = tk.Button(scrollable_frame, text="Change Profile Picture", command=update_profile_picture)
     change_icon_button.pack(pady=5)
 
-    # Bio
-    bio_label = tk.Label(settings_window, text="Bio:", font=("Arial", 14))
+    # Bio Section
+    bio_label = tk.Label(scrollable_frame, text="Bio:", font=("Arial", 14))
     bio_label.pack(pady=10)
 
-    bio_entry = tk.Text(settings_window, height=5, width=40)
-    bio_entry.insert("1.0", user_data[username].get("bio", ""))  # Load existing bio
+    bio_entry = tk.Text(scrollable_frame, height=5, width=40)
+    bio_entry.insert("1.0", user_info.get("bio", ""))  # Load existing bio
     bio_entry.pack(pady=10)
 
     def save_bio():
@@ -724,36 +977,140 @@ def show_profile_settings(username):
         if len(bio) > 256:
             messagebox.showerror("Error", "Bio cannot exceed 256 characters.")
         else:
-            user_data[username]["bio"] = bio
-            save_data()
-            messagebox.showinfo("Success", "Bio updated successfully!")
+            try:
+                response = requests.post(f"{SERVER_URL}/update_bio", json={"username": username, "bio": bio})
+                if response.json().get("success"):
+                    messagebox.showinfo("Success", "Bio updated successfully!")
+                else:
+                    messagebox.showerror("Error", "Failed to update bio.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to update bio: {e}")
 
-    save_bio_button = tk.Button(settings_window, text="Save Bio", command=save_bio)
+    save_bio_button = tk.Button(scrollable_frame, text="Save Bio", command=save_bio)
     save_bio_button.pack(pady=5)
 
-    # Friend list
-    friends_label = tk.Label(settings_window, text="Friends:", font=("Arial", 14))
+    # Friends List Section
+    friends_label = tk.Label(scrollable_frame, text="Friends:", font=("Arial", 14))
     friends_label.pack(pady=10)
 
-    friends_listbox = tk.Listbox(settings_window, height=10, width=50)
+    friends_listbox = tk.Listbox(scrollable_frame, height=10, width=50)
     friends_listbox.pack(pady=10)
 
-    # Populate the friends list using the `friends` dictionary
-    for friend in friends.get(username, []):
-        friends_listbox.insert(tk.END, friend)
+    # Populate the friends list
+    try:
+        response = requests.get(f"{SERVER_URL}/friends", params={"username": username})
+        if response.status_code == 200:
+            friends_list = response.json().get("friends", [])
+            for friend in friends_list:
+                friends_listbox.insert(tk.END, friend)
+        else:
+            messagebox.showerror("Error", f"Failed to fetch friends: {response.status_code}")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to fetch friends: {e}")
 
     def remove_friend():
-        selected = friends_listbox.get(friends_listbox.curselection())
-        if selected:
-            # Remove the friendship from both users
-            friends[username].remove(selected)
-            friends[selected].remove(username)
-            friends_listbox.delete(friends_listbox.curselection())
-            save_data()
-            messagebox.showinfo("Success", f"{selected} removed from friends.")
+        try:
+            selected_friend = friends_listbox.get(friends_listbox.curselection())
+            response = requests.post(f"{SERVER_URL}/remove_friend", json={"username": username, "friend": selected_friend})
+            if response.json().get("success"):
+                friends_listbox.delete(friends_listbox.curselection())
+                messagebox.showinfo("Success", f"{selected_friend} removed from friends.")
+            else:
+                messagebox.showerror("Error", "Failed to remove friend.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to remove friend: {e}")
 
-    remove_friend_button = tk.Button(settings_window, text="Remove Friend", command=remove_friend)
+    remove_friend_button = tk.Button(scrollable_frame, text="Remove Friend", command=remove_friend)
     remove_friend_button.pack(pady=5)
+
+def make_scrollable_window(window):
+    canvas = tk.Canvas(window)
+    scrollbar = tk.Scrollbar(window, orient="vertical", command=canvas.yview)
+    scrollable_frame = tk.Frame(canvas)
+
+    scrollable_frame.bind(
+        "<Configure>",
+        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+    )
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    return scrollable_frame
+
+def create_sort_by_menu(file_list, listbox, sort_button):
+    """
+    Creates a "Sort By" menu for sorting files displayed in a Listbox.
+
+    Args:
+        file_list (list): A list of dictionaries containing file metadata.
+                          Example: [{"name": "file1", "downloads": 10, "size": 1024, "upload_time": 1683072000}, ...]
+        listbox (tk.Listbox): The Listbox widget displaying the files.
+        sort_button (tk.Button): The button that triggers the "Sort By" menu.
+    """
+    def sort_files(criteria, reverse=False):
+        # Sort the file list based on the selected criteria
+        if criteria == "downloads":
+            file_list.sort(key=lambda x: x["downloads"], reverse=reverse)
+        elif criteria == "size":
+            file_list.sort(key=lambda x: x["size"], reverse=reverse)
+        elif criteria == "upload_time":
+            file_list.sort(key=lambda x: x["upload_time"], reverse=reverse)
+
+        # Update the Listbox with the sorted files
+        listbox.delete(0, tk.END)
+        for file in file_list:
+            listbox.insert(
+                tk.END,
+                f"{file['name']} | Downloads: {file['downloads']} | Size: {file['size']} bytes | Uploaded: {time.ctime(file['upload_time'])}"
+            )
+
+    # Create the "Sort By" menu
+    menu = tk.Menu(root, tearoff=0)
+    menu.add_command(label="Downloads (Most)", command=lambda: sort_files("downloads", reverse=True))
+    menu.add_command(label="Downloads (Least)", command=lambda: sort_files("downloads", reverse=False))
+    menu.add_command(label="Size (Biggest to Smallest)", command=lambda: sort_files("size", reverse=True))
+    menu.add_command(label="Size (Smallest to Biggest)", command=lambda: sort_files("size", reverse=False))
+    menu.add_command(label="Age (Oldest to Newest)", command=lambda: sort_files("upload_time", reverse=False))
+    menu.add_command(label="Age (Newest to Oldest)", command=lambda: sort_files("upload_time", reverse=True))
+
+    # Bind the menu to the "Sort By" button
+    def show_menu(event):
+        menu.post(event.x_root, event.y_root)
+
+    sort_button.bind("<Button-1>", show_menu)
+
+def display_files_with_sort(username):
+    # Fetch file metadata from the server
+    file_metadata = fetch_file_metadata()
+    file_list = [
+        {"name": name, **metadata}
+        for name, metadata in file_metadata.items()
+    ]
+
+    # Create a new window to display files
+    file_window = tk.Toplevel(root)
+    file_window.title("Files")
+    file_window.geometry("600x400")
+
+    # Create a Listbox to display files
+    file_listbox = tk.Listbox(file_window, height=15, width=80)
+    file_listbox.pack(pady=10)
+
+    # Populate the Listbox with initial file data
+    for file in file_list:
+        file_listbox.insert(
+            tk.END,
+            f"{file['name']} | Downloads: {file['downloads']} | Size: {file['size']} bytes | Uploaded: {time.ctime(file['upload_time'])}"
+        )
+
+    # Create the "Sort By" button
+    sort_button = tk.Button(file_window, text="Sort By")
+    sort_button.pack(pady=5)
+
+    # Attach the "Sort By" menu to the button
+    create_sort_by_menu(file_list, file_listbox, sort_button)
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -774,6 +1131,23 @@ def upload_file():
     with open(FILE_STORAGE_PATH, 'wb') as f:
         pickle.dump(file_storage, f)
     return jsonify({"success": True, "message": "File uploaded successfully"})
+
+@app.route('/upload_profile_picture', methods=['POST'])
+def upload_profile_picture():
+    if 'file' not in request.files:
+        return jsonify({"success": False, "message": "No file part in the request"}), 400
+    file = request.files['file']
+    username = request.form.get('username')
+    if not file or not username:
+        return jsonify({"success": False, "message": "Missing file or username"}), 400
+
+    # Save the file in the profile_icons directory
+    profile_icons_path = os.path.join(os.getcwd(), 'profile_icons')
+    os.makedirs(profile_icons_path, exist_ok=True)  # Ensure the directory exists
+    file_path = os.path.join(profile_icons_path, f"{username}_profile.png")
+    file.save(file_path)
+
+    return jsonify({"success": True, "message": "Profile picture uploaded successfully"})
 
 # Load data on startup
 load_data()

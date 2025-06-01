@@ -1,0 +1,10 @@
+inconviences:
+ - remove "message sent!" whenever sending a message
+ - search bar doesnt work
+
+wanted features:
+ - profile customization
+ - cleaner code
+ - report user & report code
+ - 'sort by' for files [done]
+ - file preview when hovering 
